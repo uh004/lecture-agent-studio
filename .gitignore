@@ -1,3 +1,13 @@
 venv/
 __pycache__/
 *.pyc
+
+# Environment variables
+.env
+
+# Sample data
+data/*.pptx
+
+# Outputs
+final_lecture_output/
+output_*/

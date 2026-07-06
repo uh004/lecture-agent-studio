@@ -1,0 +1,11 @@
+reportlab
+tavily-python
+langchain_community
+langchain_openai
+langchain_core
+python-pptx
+pillow
+langgraph
+google-search-results
+gradio
+streamlit
