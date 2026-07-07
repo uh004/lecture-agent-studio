@@ -7,14 +7,20 @@
 
 **Lecture Agent Studio**는 PPTX 파일을 업로드하면 AI가 슬라이드를 심층 분석하여 대본을 작성하고, AI 성우의 더빙을 입혀 최종 강의 영상(MP4)을 자동으로 생성해 주는 **완전 자동화 멀티모달 AI 파이프라인**입니다.
 
+<img width="1529" height="861" alt="제목 없음" src="https://github.com/user-attachments/assets/ab00a586-716e-4ad6-9f0a-6d8f1566c41c" />
+
 <p align="center">
-  <!-- TODO: 시연 GIF 또는 스크린샷 이미지 링크로 교체하세요 -->
-  <img src="https://via.placeholder.com/800x400.png?text=[Demo+GIF+Placeholder]+Upload+PPT+%2D%3E+Wait+%2D%3E+Get+Video" alt="Demo Video" width="800">
+  <video src="https://github.com/user-attachments/assets/560c9a99-bb18-4551-9b7b-2eb8f65b0b1b" controls autoplay muted loop width="80%"></video>
 </p>
+
 
 ---
 
 ## 🏗️ System Architecture
+
+
+
+
 
 이 프로젝트는 무거운 영상 렌더링 작업을 처리하기 위해 **클라이언트-서버 구조**와 **비동기 백그라운드 작업(Background Tasks)**을 채택했습니다. 
 
