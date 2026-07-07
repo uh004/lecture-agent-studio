@@ -5,9 +5,16 @@ __pycache__/
 # Environment variables
 .env
 
-# Sample data
-data/*.pptx
+# Sample data / Uploads
+data/
 
-# Outputs
-final_lecture_output/
+# Generated Workspaces & Outputs
+workspace/
 output_*/
+final_lecture_output/
+
+# Media & Temporary files (just in case they are generated outside workspace)
+*.mp4
+*.mp3
+*.png
+*.txt
