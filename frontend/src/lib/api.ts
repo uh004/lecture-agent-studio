@@ -1,7 +1,8 @@
 import type { CreateLectureInput, GenerateResponse, JobStatus } from "@/lib/types";
 
 export const API_BASE_URL = (
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
+  process.env.NEXT_PUBLIC_API_BASE_URL ??
+  (process.env.NODE_ENV === "development" ? "http://localhost:8000" : "")
 ).replace(/\/$/, "");
 
 async function readError(response: Response): Promise<string> {
