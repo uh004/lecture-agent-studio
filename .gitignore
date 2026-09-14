@@ -12,6 +12,10 @@ data/
 workspace/
 output_*/
 final_lecture_output/
+notebooks/runs/
+
+# Jupyter temporary files
+.ipynb_checkpoints/
 
 # Media & Temporary files (just in case they are generated outside workspace)
 *.mp4

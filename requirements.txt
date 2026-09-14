@@ -6,6 +6,7 @@ langchain_core
 python-pptx
 pillow
 langgraph
+langsmith
 google-search-results
 gradio
 streamlit
