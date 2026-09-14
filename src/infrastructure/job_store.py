@@ -26,11 +26,15 @@ class JobStore:
         self.redis_url = (
             os.getenv("UPSTASH_REDIS_REST_URL")
             or os.getenv("KV_REST_API_URL")
+            # Vercel's Upstash integration adds the selected custom prefix
+            # to its legacy KV-compatible variable names.
+            or os.getenv("UPSTASH_REDIS_REST_KV_REST_API_URL")
             or ""
         ).rstrip("/")
         self.redis_token = (
             os.getenv("UPSTASH_REDIS_REST_TOKEN")
             or os.getenv("KV_REST_API_TOKEN")
+            or os.getenv("UPSTASH_REDIS_REST_KV_REST_API_TOKEN")
             or ""
         )
         self.ttl_seconds = max(3600, int(os.getenv("JOB_TTL_SECONDS", "604800")))
