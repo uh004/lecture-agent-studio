@@ -58,6 +58,16 @@ def resolve_binary(name: str, env_key: str) -> str:
             matches = sorted(packages.glob(f"Gyan.FFmpeg*/*/bin/{name}.exe"))
             if matches:
                 return str(matches[-1])
+
+    # Vercel Python Functions do not include a system FFmpeg binary. The
+    # imageio-ffmpeg wheel provides a portable executable for the runtime.
+    if name == "ffmpeg":
+        try:
+            import imageio_ffmpeg
+
+            return imageio_ffmpeg.get_ffmpeg_exe()
+        except (ImportError, RuntimeError):
+            pass
     return name
 
 

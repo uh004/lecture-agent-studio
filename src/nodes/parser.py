@@ -11,7 +11,14 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE, PP_PLACEHOLDER
 
 from src.core.state import AgentState
-from src.core.utils import clean_text, export_slide_as_png, record_error, reset_slide_runtime, safe_print
+from src.core.utils import (
+    clean_text,
+    export_slide_as_png,
+    record_error,
+    render_slide_fallback,
+    reset_slide_runtime,
+    safe_print,
+)
 
 
 print = safe_print
@@ -67,16 +74,15 @@ def node_parse_ppt(state: AgentState) -> AgentState:
         print(f"  슬라이드 {slide_index + 1}/{len(presentation.slides)} 추출")
         slide_errors: List[str] = []
         slide_image = ""
+        native_render_error = ""
+        destination = slides_dir / f"slide_{slide_index + 1}.png"
         try:
             rendered = export_slide_as_png(str(pptx_path), str(slides_dir), slide_index)
-            destination = slides_dir / f"slide_{slide_index + 1}.png"
             if Path(rendered).resolve() != destination.resolve():
                 os.replace(rendered, destination)
             slide_image = str(destination)
         except Exception as exc:
-            message = f"슬라이드 {slide_index + 1} PNG 생성 실패: {exc}"
-            slide_errors.append(message)
-            record_error(state, message)
+            native_render_error = str(exc)
 
         notes = ""
         try:
@@ -202,6 +208,24 @@ def node_parse_ppt(state: AgentState) -> AgentState:
                     links.add(address)
             except Exception:
                 pass
+
+        if not slide_image:
+            try:
+                slide_image = render_slide_fallback(
+                    title=title,
+                    body_texts=body_texts,
+                    tables=tables,
+                    images=images,
+                    output_path=str(destination),
+                )
+                print(
+                    f"  ⚠️ 슬라이드 {slide_index + 1}: 시스템 렌더러 대신 "
+                    f"Vercel 호환 렌더러 사용 ({native_render_error})"
+                )
+            except Exception as exc:
+                message = f"슬라이드 {slide_index + 1} PNG 생성 실패: {exc}"
+                slide_errors.append(message)
+                record_error(state, message)
 
         slides.append({
             "index": slide_index,

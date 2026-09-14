@@ -2,7 +2,7 @@
 
 PPTX를 파싱하고, 슬라이드를 멀티모달로 분석한 뒤 근거 기반 강의 Script·음성·영상을 생성하는 LangGraph 프로젝트입니다.
 
-현재 v4 엔진은 `notebooks/lecture_agent_final.ipynb`에서 검증한 흐름을 `src/` 모듈로 분리한 상태입니다. 기존 `main.py`와 `app.py`는 v3 FastAPI·Streamlit 코드이므로, 다음 단계에서 v4 서비스 계층에 맞춰 교체할 예정입니다.
+현재 v4 엔진은 `notebooks/lecture_agent_final.ipynb`에서 검증한 흐름을 `src/` 모듈로 분리했으며, `main.py` FastAPI와 `frontend/` Next.js가 같은 엔진을 사용합니다.
 
 ## v4 처리 흐름
 
@@ -39,12 +39,19 @@ src/
     script.py       Script Draft 생성
     validation.py   Script 검증·승인·실패 처리
     media.py        TTS·영상·병합·Final QA
+  infrastructure/
+    job_store.py       로컬 메모리·Upstash 작업 상태 저장
+    object_storage.py  로컬 파일·Vercel Blob 영상 저장
   graph.py          LangGraph 조립
   service.py        Notebook/API 공용 실행 함수
   cli.py            명령행 실행기
 
 evals/              로컬·LangSmith 평가 도구
 notebooks/          설계 설명과 E2E 검증 Notebook
+frontend/           Next.js 사용자 화면
+main.py             FastAPI API 진입점
+pyproject.toml       Vercel Python 런타임 의존성·진입점
+vercel.json          Vercel Function 실행 시간·번들 설정
 ```
 
 ## 환경 설정
@@ -67,7 +74,7 @@ LANGSMITH_API_KEY=...
 LANGSMITH_PROJECT=lecture-agent-studio
 ```
 
-PPT 렌더링과 영상 생성에는 LibreOffice, Poppler의 `pdftoppm`, FFmpeg·FFprobe가 필요합니다. 자동 탐색되지 않으면 `.env`에 `SOFFICE_CMD`, `PDFTOPPM_CMD`, `FFMPEG_CMD`, `FFPROBE_CMD` 경로를 지정합니다.
+로컬에서 원본 PPT 디자인 그대로 렌더링하려면 LibreOffice와 Poppler의 `pdftoppm`이 필요합니다. 없는 환경에서는 텍스트·표·내장 이미지를 이용한 호환 렌더러로 자동 전환됩니다. FFmpeg는 시스템 설치본을 우선 사용하고, 없으면 `imageio-ffmpeg` 실행 파일을 사용합니다.
 
 ## 실행
 
@@ -112,3 +119,49 @@ LangSmith 평가:
   --with-llm-judge `
   --judge-model gpt-4o-mini
 ```
+
+## Vercel 배포
+
+Vercel에서 같은 GitHub 저장소를 두 프로젝트로 연결합니다. Vercel Services Private Beta 권한이 없어도 사용할 수 있는 구성입니다.
+
+### 1. API 프로젝트
+
+- 저장소: `lecture-agent-studio`
+- Root Directory: 저장소 루트(비워 둠)
+- Framework: FastAPI 자동 감지
+- 진입점: `pyproject.toml`의 `main:app`
+- Function 최대 실행 시간: `vercel.json`에서 300초
+
+환경변수:
+
+```dotenv
+OPENAI_API_KEY=...
+TAVILY_API_KEY=...
+LLM_MODEL=gpt-4o-mini
+TTS_MODEL=tts-1
+VERCEL_MAX_SLIDES=5
+FRONTEND_ORIGINS=https://프론트엔드프로젝트.vercel.app
+FRONTEND_ORIGIN_REGEX=https://.*\.vercel\.app
+```
+
+API 프로젝트의 Storage/Marketplace에서 다음 두 저장소를 연결합니다.
+
+- Upstash Redis: 작업 상태 저장. `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`이 자동 등록됩니다.
+- Vercel Blob(Public): 완성 MP4 저장. `BLOB_READ_WRITE_TOKEN`이 자동 등록됩니다.
+
+배포 후 `https://API주소.vercel.app/api/health`의 `ready`가 `true`인지 확인합니다.
+
+### 2. 웹 프로젝트
+
+- 같은 저장소를 다시 Import
+- Root Directory: `frontend`
+- Framework: Next.js
+- 환경변수:
+
+```dotenv
+NEXT_PUBLIC_API_BASE_URL=https://API주소.vercel.app
+```
+
+환경변수를 저장한 뒤 배포합니다. API와 웹은 같은 Vercel 계정에서 각각 Git push 자동 배포됩니다.
+
+Vercel Hobby의 함수 최대 실행 시간은 300초입니다. 포트폴리오 시연은 먼저 1~3장 PPT로 검증하고, 300초를 넘는 대형 강의는 슬라이드 단위 작업 분리 또는 Pro 플랜이 필요합니다.

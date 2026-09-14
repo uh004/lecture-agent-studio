@@ -2,6 +2,11 @@ reportlab
 python-dotenv
 openai
 tavily-python
+fastapi
+python-multipart
+uvicorn
+vercel>=0.5
+imageio-ffmpeg
 langchain_community
 langchain_openai
 langchain_core

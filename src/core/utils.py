@@ -10,10 +10,11 @@ import os
 import re
 import shutil
 import subprocess
+import textwrap
 from pathlib import Path
 from typing import Any, Dict, List
 
-from src.core.config import FFPROBE_CMD, PDFTOPPM_CMD, SOFFICE_CMD
+from src.core.config import FFMPEG_CMD, FFPROBE_CMD, PDFTOPPM_CMD, SOFFICE_CMD
 from src.core.state import AgentState
 
 
@@ -107,6 +108,32 @@ def img_to_data_url(path: str) -> str:
 def ffprobe_media(path: str) -> Dict[str, Any]:
     if not path or not Path(path).exists():
         raise FileNotFoundError(f"미디어 파일 없음: {path}")
+    if not command_available(FFPROBE_CMD) and command_available(FFMPEG_CMD):
+        # imageio-ffmpeg includes ffmpeg but not ffprobe. FFmpeg still prints
+        # the duration and stream types without decoding the full media file.
+        result = subprocess.run(
+            [FFMPEG_CMD, "-hide_banner", "-i", path],
+            capture_output=True,
+            text=True,
+        )
+        metadata = f"{result.stdout}\n{result.stderr}"
+        duration_match = re.search(
+            r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", metadata
+        )
+        duration = 0.0
+        if duration_match:
+            hours, minutes, seconds = duration_match.groups()
+            duration = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+        has_video = bool(re.search(r"Stream .*Video:", metadata))
+        has_audio = bool(re.search(r"Stream .*Audio:", metadata))
+        if duration <= 0 and not (has_video or has_audio):
+            raise RuntimeError(metadata.strip() or "FFmpeg 미디어 정보 확인 실패")
+        return {
+            "duration": duration,
+            "has_video": has_video,
+            "has_audio": has_audio,
+            "streams": [],
+        }
     command = [
         FFPROBE_CMD,
         "-v", "error",
@@ -135,6 +162,109 @@ def ffprobe_duration(path: str) -> float:
 
 def resolve_soffice() -> str:
     return SOFFICE_CMD
+
+
+def render_slide_fallback(
+    *,
+    title: str,
+    body_texts: List[str],
+    tables: List[Any],
+    images: List[str],
+    output_path: str,
+) -> str:
+    """Create a readable slide image when LibreOffice is unavailable.
+
+    This renderer intentionally favors reliability over pixel-perfect PPTX
+    fidelity. It keeps Vercel deployments functional while local runs continue
+    to use LibreOffice/Poppler when those tools are installed.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    width, height = 1920, 1080
+    canvas = Image.new("RGB", (width, height), "#F7FAFF")
+    draw = ImageDraw.Draw(canvas)
+    draw.rectangle((0, 0, width, 24), fill="#2563EB")
+    draw.rounded_rectangle((70, 65, width - 70, height - 65), 34, fill="white")
+
+    font_candidates = [
+        os.getenv("SLIDE_FONT_PATH", ""),
+        r"C:\Windows\Fonts\malgun.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+
+    def load_font(size: int) -> Any:
+        for candidate in font_candidates:
+            if candidate and Path(candidate).exists():
+                try:
+                    return ImageFont.truetype(candidate, size=size)
+                except OSError:
+                    continue
+        return ImageFont.load_default()
+
+    title_font = load_font(64)
+    body_font = load_font(34)
+    small_font = load_font(27)
+    safe_title = clean_text(title) or "강의 슬라이드"
+    draw.text((125, 115), safe_title, font=title_font, fill="#172554")
+    draw.line((125, 210, width - 125, 210), fill="#DBEAFE", width=4)
+
+    text_right = 1780
+    image_box = None
+    usable_images = [Path(path) for path in images if path and Path(path).exists()]
+    if usable_images:
+        text_right = 1080
+        image_box = (1135, 275, 1745, 895)
+
+    y = 270
+    max_chars = 43 if image_box else 72
+    lines: List[str] = []
+    for paragraph in body_texts:
+        value = clean_text(paragraph)
+        if not value:
+            continue
+        wrapped = textwrap.wrap(value, width=max_chars) or [value]
+        lines.extend([f"• {wrapped[0]}", *[f"  {line}" for line in wrapped[1:]]])
+
+    for table in tables[:1]:
+        for row in table[:5]:
+            row_text = "  |  ".join(clean_text(cell) for cell in row if clean_text(cell))
+            if row_text:
+                lines.extend(textwrap.wrap(row_text, width=max_chars) or [row_text])
+
+    if not lines:
+        lines = ["슬라이드의 시각 자료를 중심으로 설명합니다."]
+    for line in lines[:15]:
+        draw.text((135, y), line, font=body_font, fill="#1E293B")
+        y += 51
+        if y > 940:
+            break
+
+    if image_box:
+        try:
+            with Image.open(usable_images[0]) as source_image:
+                source = source_image.convert("RGB")
+                max_w = image_box[2] - image_box[0]
+                max_h = image_box[3] - image_box[1]
+                source.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
+                x = image_box[0] + (max_w - source.width) // 2
+                image_y = image_box[1] + (max_h - source.height) // 2
+                draw.rounded_rectangle(image_box, 24, fill="#EFF6FF")
+                canvas.paste(source, (x, image_y))
+        except OSError:
+            pass
+
+    draw.text(
+        (125, 980),
+        "Lecture Agent Studio · Vercel compatible rendering",
+        font=small_font,
+        fill="#64748B",
+    )
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(destination, format="PNG", optimize=True)
+    return str(destination)
 
 
 def export_slide_as_png(pptx_path: str, work_dir: str, slide_index: int, dpi: int = 220) -> str:
