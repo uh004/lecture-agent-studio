@@ -1,0 +1,10 @@
+.git
+.env
+frontend
+notebooks
+tests
+evals
+workspace
+output
+__pycache__
+*.pyc

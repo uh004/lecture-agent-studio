@@ -284,8 +284,13 @@ def export_slide_as_png(pptx_path: str, work_dir: str, slide_index: int, dpi: in
     pdf_path = output_dir / f"{pptx.stem}.pdf"
     pdf_is_stale = not pdf_path.exists() or pdf_path.stat().st_mtime < pptx.stat().st_mtime
     if pdf_is_stale:
+        profile_dir = output_dir / "libreoffice_profile"
+        profile_dir.mkdir(parents=True, exist_ok=True)
         command = [
-            soffice_cmd, "--headless", "--convert-to", "pdf:impress_pdf_Export",
+            soffice_cmd,
+            f"-env:UserInstallation={profile_dir.as_uri()}",
+            "--headless", "--nologo", "--nodefault", "--nolockcheck",
+            "--convert-to", "pdf:impress_pdf_Export",
             "--outdir", str(output_dir), str(pptx),
         ]
         result = subprocess.run(command, capture_output=True, text=True)

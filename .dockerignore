@@ -1,0 +1,16 @@
+.git
+.env
+.vercel
+frontend
+notebooks
+tests
+evals
+data
+workspace
+output_*
+venv
+__pycache__
+*.pyc
+*.mp3
+*.mp4
+*.png

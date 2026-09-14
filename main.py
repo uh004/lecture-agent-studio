@@ -1,18 +1,18 @@
 """Lecture Agent Studio FastAPI entrypoint.
 
 Local development uses process memory and local files. On Vercel, the same API
-uses Upstash Redis for job state and Vercel Blob for generated videos.
+uses Upstash Redis for job state/queueing and Vercel Blob for source and output files.
 """
 
 from __future__ import annotations
 
 import os
-import shutil
-import tempfile
 import uuid
 from io import BytesIO
 from pathlib import Path
 from typing import Annotated, Any, Dict
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from pptx import Presentation
 
 from src.infrastructure import create_job_store, create_object_storage
-from src.service import run_lecture_agent
+from src.service import process_lecture_job
 
 
 app = FastAPI(title="Lecture Agent Studio API", version="1.1.0")
@@ -47,84 +47,40 @@ is_vercel = bool(os.getenv("VERCEL"))
 
 
 def _job_root(job_id: str) -> Path:
-    if is_vercel:
-        return Path(tempfile.gettempdir()) / "lecture-agent" / job_id
     return Path("workspace") / f"job_{job_id}"
 
 
-def _update_job_progress(job_id: str, node_name: str, state: Dict[str, Any]) -> None:
-    total_slides = max(0, int(state.get("total_slides", 0)))
-    slide_index = max(0, int(state.get("slide_index", 0)))
-
-    if node_name == "accumulate":
-        current_slide = slide_index
-    elif node_name in {"concat", "final_quality_check"}:
-        current_slide = total_slides
-    else:
-        current_slide = min(total_slides, slide_index + 1) if total_slides else 0
-
-    job_store.update(
-        job_id,
-        current_node=node_name,
-        current_slide=current_slide,
-        total_slides=total_slides,
-    )
-
-
-def run_pipeline(job_id: str, pptx_path: str, settings: Dict[str, Any]) -> None:
-    """Run the lecture graph and persist externally visible progress."""
-    work_dir = _job_root(job_id) / "work"
-    job_store.update(job_id, status="running")
-
+def run_local_pipeline(job_id: str) -> None:
+    """Keep the original background behavior for local development only."""
     try:
-        final_state = run_lecture_agent(
-            pptx_path,
-            lecture_config=settings,
-            work_dir=work_dir,
-            recursion_limit=1000,
-            on_node=lambda node, state: _update_job_progress(job_id, node, state),
+        process_lecture_job(
+            job_id,
+            job_store,
+            object_storage,
+            work_root=Path("workspace"),
+            cleanup=False,
         )
-
-        final_video = str(final_state.get("final_video", ""))
-        final_status = str(final_state.get("final_status", "failed"))
-        final_qa = dict(final_state.get("final_qa", {}) or {})
-        errors = list(final_state.get("errors", []) or [])
-        total_slides = int(final_state.get("total_slides", 0))
-
-        if final_video and final_status in {"completed", "partial_completed"}:
-            published = object_storage.publish_video(Path(final_video), job_id)
-            job_store.update(
-                job_id,
-                status="completed",
-                final_status=final_status,
-                final_qa=final_qa,
-                errors=errors,
-                current_slide=total_slides,
-                total_slides=total_slides,
-                final_video_path=(final_video if published["storage"] == "local" else None),
-                final_video_url=published["url"],
-                final_download_url=published["download_url"],
-                storage=published["storage"],
-            )
-        else:
-            job_store.update(
-                job_id,
-                status="error",
-                final_status=final_status,
-                final_qa=final_qa,
-                errors=errors,
-                current_slide=total_slides,
-                total_slides=total_slides,
-                error_message=(errors[-1] if errors else "최종 영상을 생성하지 못했습니다."),
-            )
     except Exception as exc:
-        try:
-            job_store.update(job_id, status="error", error_message=str(exc))
-        except Exception:
-            print(f"작업 상태 저장 실패 ({job_id}): {exc}")
-    finally:
-        if is_vercel:
-            shutil.rmtree(_job_root(job_id), ignore_errors=True)
+        print(f"로컬 작업 실행 실패 ({job_id}): {exc}")
+
+
+def wake_worker() -> None:
+    """Wake a sleeping web-service worker; the Redis queue remains authoritative."""
+    worker_url = os.getenv("WORKER_URL", "").strip().rstrip("/")
+    if not worker_url:
+        return
+    request = Request(
+        f"{worker_url}/health",
+        method="GET",
+        headers={"User-Agent": "lecture-agent-api/1.0"},
+    )
+    try:
+        with urlopen(request, timeout=20) as response:
+            response.read(1)
+    except (HTTPError, URLError, TimeoutError) as exc:
+        # The job is already durable in Redis. A persistent worker, a later
+        # health check, or a platform restart can still consume it.
+        print(f"Worker wake request failed: {exc}")
 
 
 def _require_vercel_integrations() -> None:
@@ -148,6 +104,7 @@ def health_check() -> Dict[str, Any]:
         "runtime": "vercel" if is_vercel else "local",
         "job_store": job_store.backend,
         "object_storage": object_storage.backend,
+        "execution": "redis_queue" if is_vercel else "local_background",
         "ready": ready,
     }
 
@@ -181,24 +138,14 @@ async def generate_video(
         raise HTTPException(status_code=400, detail=f"올바른 PPTX 파일이 아닙니다: {exc}") from exc
     if slide_count == 0:
         raise HTTPException(status_code=400, detail="PPTX에 슬라이드가 없습니다.")
-    if is_vercel:
-        max_slides = max(1, int(os.getenv("VERCEL_MAX_SLIDES", "5")))
-        if slide_count > max_slides:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"현재 Vercel 배포는 최대 {max_slides}장까지 지원합니다. "
-                    "함수의 300초 제한을 넘지 않도록 PPT를 나누거나 "
-                    "VERCEL_MAX_SLIDES 설정을 조정해 주세요."
-                ),
-            )
+    max_slides = max(1, int(os.getenv("MAX_SLIDES", "100")))
+    if slide_count > max_slides:
+        raise HTTPException(
+            status_code=422,
+            detail=f"한 작업에서 처리할 수 있는 최대 슬라이드는 {max_slides}장입니다.",
+        )
 
     job_id = str(uuid.uuid4())
-    upload_dir = _job_root(job_id) / "input"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    file_path = upload_dir / f"{job_id}_{original_name}"
-    file_path.write_bytes(content)
-
     settings = {
         "tone": tone,
         "style": style,
@@ -221,10 +168,33 @@ async def generate_video(
             "final_qa": {},
             "errors": [],
             "error_message": None,
+            "original_name": original_name,
+            "settings": settings,
+            "source_url": None,
+            "source_path": None,
         },
     )
 
-    background_tasks.add_task(run_pipeline, job_id, str(file_path), settings)
+    if is_vercel:
+        try:
+            uploaded = object_storage.publish_source(content, job_id, original_name)
+            job_store.update(job_id, source_url=uploaded["url"])
+            job_store.enqueue(job_id)
+            wake_worker()
+        except Exception as exc:
+            job_store.update(job_id, status="error", error_message=str(exc))
+            raise HTTPException(
+                status_code=503,
+                detail=f"작업 큐에 등록하지 못했습니다: {exc}",
+            ) from exc
+    else:
+        upload_dir = _job_root(job_id) / "input"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        file_path = upload_dir / f"{job_id}_{original_name}"
+        file_path.write_bytes(content)
+        job_store.update(job_id, source_path=str(file_path.resolve()))
+        background_tasks.add_task(run_local_pipeline, job_id)
+
     return {"job_id": job_id, "message": "강의 영상 생성을 시작했습니다."}
 
 
@@ -238,7 +208,14 @@ def get_status(job_id: str) -> Dict[str, Any]:
     response = {
         key: value
         for key, value in job.items()
-        if key not in {"final_video_path", "final_video_url", "final_download_url"}
+        if key not in {
+            "final_video_path",
+            "final_video_url",
+            "final_download_url",
+            "source_path",
+            "source_url",
+            "settings",
+        }
     }
     response["video_url"] = f"/api/video/{job_id}" if job["status"] == "completed" else None
     return response

@@ -6,6 +6,7 @@ venv/
 notebooks/
 evals/
 tests/
+worker/
 image/
 data/
 workspace/

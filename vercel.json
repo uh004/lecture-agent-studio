@@ -3,7 +3,7 @@
   "functions": {
     "main.py": {
       "maxDuration": 300,
-      "excludeFiles": "{frontend/**,notebooks/**,evals/**,tests/**,image/**,workspace/**,data/**,venv/**}"
+      "excludeFiles": "{frontend/**,worker/**,notebooks/**,evals/**,tests/**,image/**,workspace/**,data/**,venv/**}"
     }
   }
 }

@@ -2,6 +2,7 @@ import type { JobStatus } from "@/lib/types";
 
 const NODE_LABELS: Record<string, string> = {
   init: "작업 준비",
+  download_source: "PPT 원본 내려받기",
   parse_ppt: "PPT 내용 분석",
   analyze_slide: "슬라이드 이해",
   web_search: "필요한 외부 정보 검색",
@@ -40,6 +41,7 @@ export function getProgress(job: JobStatus): number {
 
 function getRunningProgress(job: JobStatus): number {
   if (job.current_node === "init") return 2;
+  if (job.current_node === "download_source") return 3;
   if (job.current_node === "parse_ppt") return 5;
   if (job.current_node === "concat") return 96;
   if (job.current_node === "final_quality_check") return 99;
