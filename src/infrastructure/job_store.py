@@ -5,10 +5,9 @@ from __future__ import annotations
 import json
 import os
 import threading
-from collections import deque
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Any, Deque, Dict, Optional
+from typing import Any, Dict, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -39,11 +38,7 @@ class JobStore:
             or ""
         )
         self.ttl_seconds = max(3600, int(os.getenv("JOB_TTL_SECONDS", "604800")))
-        self.queue_key = os.getenv("JOB_QUEUE_KEY", "lecture-agent:jobs:pending").strip()
-        self.processing_queue_key = f"{self.queue_key}:processing"
         self._memory: Dict[str, JobData] = {}
-        self._queue: Deque[str] = deque()
-        self._processing_queue: Deque[str] = deque()
         self._lock = threading.RLock()
 
     @property
@@ -103,67 +98,6 @@ class JobStore:
         job["updated_at"] = _utc_now()
         self._write(job_id, job)
         return deepcopy(job)
-
-    def enqueue(self, job_id: str) -> None:
-        """Add a job to the durable worker queue."""
-        if self.is_durable:
-            self._redis_command("LPUSH", self.queue_key, job_id)
-            return
-        with self._lock:
-            self._queue.append(job_id)
-
-    def dequeue(self) -> Optional[str]:
-        """Claim the oldest job and keep it recoverable until acknowledged."""
-        if self.is_durable:
-            value = self._redis_command(
-                "RPOPLPUSH", self.queue_key, self.processing_queue_key
-            )
-            return str(value) if value is not None else None
-        with self._lock:
-            if not self._queue:
-                return None
-            value = self._queue.popleft()
-            self._processing_queue.append(value)
-            return value
-
-    def acknowledge(self, job_id: str) -> None:
-        if self.is_durable:
-            self._redis_command("LREM", self.processing_queue_key, 1, job_id)
-            return
-        with self._lock:
-            try:
-                self._processing_queue.remove(job_id)
-            except ValueError:
-                pass
-
-    def recover_inflight(self) -> int:
-        """Return jobs left by an interrupted single worker to the pending queue."""
-        recovered = 0
-        if self.is_durable:
-            while True:
-                value = self._redis_command(
-                    "RPOPLPUSH", self.processing_queue_key, self.queue_key
-                )
-                if value is None:
-                    return recovered
-                recovered += 1
-        with self._lock:
-            while self._processing_queue:
-                self._queue.appendleft(self._processing_queue.pop())
-                recovered += 1
-        return recovered
-
-    def queue_depth(self) -> int:
-        if self.is_durable:
-            return int(self._redis_command("LLEN", self.queue_key) or 0)
-        with self._lock:
-            return len(self._queue)
-
-    def inflight_depth(self) -> int:
-        if self.is_durable:
-            return int(self._redis_command("LLEN", self.processing_queue_key) or 0)
-        with self._lock:
-            return len(self._processing_queue)
 
     def _write(self, job_id: str, value: JobData) -> None:
         if self.is_durable:

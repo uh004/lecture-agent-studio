@@ -1,64 +1,19 @@
-import asyncio
 import os
 import tempfile
 import unittest
-from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
-from fastapi import BackgroundTasks, UploadFile
 from PIL import Image
 from pptx import Presentation
 
-import main as api_main
 from src.core.utils import render_slide_fallback
 from src.infrastructure.job_store import JobStore
 from src.infrastructure.object_storage import ObjectStorage
 from src.nodes.parser import node_parse_ppt
-from src.service import process_lecture_job
 
 
 class VercelRuntimeAdapterTests(unittest.TestCase):
-    def test_vercel_generate_publishes_source_and_enqueues_job(self) -> None:
-        presentation = Presentation()
-        presentation.slides.add_slide(presentation.slide_layouts[1])
-        content = BytesIO()
-        presentation.save(content)
-
-        with patch.dict(os.environ, {}, clear=True):
-            store = JobStore()
-
-        class RemoteStorage:
-            is_remote = True
-
-            @staticmethod
-            def publish_source(data, job_id, filename):
-                self.assertTrue(data)
-                self.assertEqual(filename, "lecture.pptx")
-                return {
-                    "url": f"https://blob.example/{job_id}/lecture.pptx",
-                    "download_url": "",
-                    "storage": "vercel_blob",
-                }
-
-        upload = UploadFile(filename="lecture.pptx", file=BytesIO(content.getvalue()))
-        with (
-            patch.object(api_main, "is_vercel", True),
-            patch.object(api_main, "job_store", store),
-            patch.object(api_main, "object_storage", RemoteStorage()),
-            patch.object(api_main, "_require_vercel_integrations"),
-            patch.object(api_main, "wake_worker") as wake,
-        ):
-            result = asyncio.run(
-                api_main.generate_video(BackgroundTasks(), upload)
-            )
-
-        job = store.get(result["job_id"])
-        self.assertEqual(job["status"], "pending")
-        self.assertTrue(job["source_url"].startswith("https://blob.example/"))
-        self.assertEqual(store.queue_depth(), 1)
-        wake.assert_called_once_with()
-
     def test_memory_job_store_round_trip(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             store = JobStore()
@@ -69,66 +24,6 @@ class VercelRuntimeAdapterTests(unittest.TestCase):
             updated = store.update("job-1", status="running", current_slide=1)
             self.assertEqual(updated["status"], "running")
             self.assertEqual(store.get("job-1")["current_slide"], 1)
-
-    def test_memory_job_queue_is_fifo(self) -> None:
-        with patch.dict(os.environ, {}, clear=True):
-            store = JobStore()
-            store.enqueue("job-1")
-            store.enqueue("job-2")
-            self.assertEqual(store.queue_depth(), 2)
-            self.assertEqual(store.dequeue(), "job-1")
-            self.assertEqual(store.dequeue(), "job-2")
-            self.assertIsNone(store.dequeue())
-
-    def test_memory_job_queue_recovers_unacknowledged_job(self) -> None:
-        with patch.dict(os.environ, {}, clear=True):
-            store = JobStore()
-            store.enqueue("job-1")
-            self.assertEqual(store.dequeue(), "job-1")
-            self.assertEqual(store.inflight_depth(), 1)
-            self.assertEqual(store.recover_inflight(), 1)
-            self.assertEqual(store.dequeue(), "job-1")
-            store.acknowledge("job-1")
-            self.assertEqual(store.inflight_depth(), 0)
-
-    def test_process_job_uses_shared_state_contract(self) -> None:
-        with patch.dict(os.environ, {}, clear=True), tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source = root / "lecture.pptx"
-            source.write_bytes(b"pptx")
-            store = JobStore()
-            storage = ObjectStorage()
-            store.create(
-                "job-1",
-                {
-                    "status": "pending",
-                    "source_path": str(source),
-                    "original_name": source.name,
-                    "settings": {"speed": 1.0},
-                },
-            )
-
-            def fake_run(*args, **kwargs):
-                final_video = Path(kwargs["work_dir"]) / "final_lecture.mp4"
-                final_video.parent.mkdir(parents=True, exist_ok=True)
-                final_video.write_bytes(b"video")
-                return {
-                    "final_video": str(final_video),
-                    "final_status": "completed",
-                    "final_qa": {"passed": True},
-                    "errors": [],
-                    "total_slides": 1,
-                }
-
-            with patch("src.service.run_lecture_agent", side_effect=fake_run):
-                process_lecture_job(
-                    "job-1", store, storage, work_root=root / "work", cleanup=False
-                )
-
-            result = store.get("job-1")
-            self.assertEqual(result["status"], "completed")
-            self.assertEqual(result["storage"], "local")
-            self.assertTrue(Path(result["final_video_path"]).exists())
 
     def test_local_object_storage_keeps_file(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
