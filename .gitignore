@@ -22,3 +22,11 @@ notebooks/runs/
 *.mp3
 *.png
 *.txt
+
+# Next.js frontend
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env.local
+frontend/.vercel/
+frontend/npm-debug.log*
