@@ -1,1 +1,1 @@
-# src.nodes package
+"""Lecture Agent v4 LangGraph nodes."""
